@@ -38,10 +38,11 @@ def main():
     parser.add_argument("--chunk-size", type=int, default=10, help="The number of K values in each chunk")
     # Alg-specific arguments
     parser.add_argument("--sketch-dim", type=int, default=100, help="The projection-dimension of the sketch transform (if alg=sketch)")
-    parser.add_argument("--learn-iters-base-exp", type=float, default=0.5, help="The exponent e of int(2*K^e)+1 --- the base number of iterations used with alg=alt_fixed.")
+    parser.add_argument("--learn-iters-base-exp", type=float, default=0.5, help="The exponent e of int(K^e)+1 --- the base number of iterations (phase length) used with alg=alt_fixed.")
     parser.add_argument("--lookback-period", type=int, default=10, help="The number of steps to look-back for the alternation condition (if alg=alt_adaptive)")
     parser.add_argument("--alt-threshold", type=float, default=0.1, help="The alternation condition threshold (if alg=alt_adaptive) --- actual threshold will be this param * d^2")
-    parser.add_argument("--learn-iters-budget-exp", type=float, default=0.5, help="The exponent e of int(4*K^e)+1 --- the total learning iterations budget if alg=alt_adaptive")
+    parser.add_argument("--learn-iters-budget-exp", type=float, default=0.5, help="The exponent e of int(K^e)+1 --- the total learning iterations budget if alg=alt_adaptive")
+    parser.add_argument("--max-phase-len-exp", type=float, default=0.5, help="The exponent f of int(K^f)+1 -- the maximum phase length (before reset) used with alg=alt_adaptive")
     
     args = parser.parse_args()
     K_min = args.k_min
@@ -97,7 +98,6 @@ def main():
     elif args.alg == 'alt_fixed':
         print('Space-saving LSVI-UCB (fixed)\n------------------------------')
         learn_iters_base_fn = lambda K: int(2.*(K**args.learn_iters_base_exp))+1
-        total_learn_iters_fn = lambda K : 2*learn_iters_base_fn(K) + mdp.H # Works with scale_factor = 0.5
         res = Parallel(n_jobs=args.num_jobs)(delayed(lsvi_ucb_alt_learning_fixed)(
                                                                chunk[0], chunk[1], K_step, num_reps,
                                                                args.output_folder, 'output_chunk',
@@ -106,13 +106,12 @@ def main():
                                                                beta_fn,
                                                                V_opt[0],
                                                                learn_iters_base_fn=learn_iters_base_fn,
-                                                               scale_factor=0.5,
-                                                               total_learn_iters_fn=total_learn_iters_fn
                                                             )
                                     for chunk in chunk_intervals)
     elif args.alg == 'alt_adaptive':
         print('Space-saving LSVI-UCB (adaptive)\n----------------------------------')
-        learn_iters_budget_fn = lambda K: int(4.*(K**args.learn_iters_budget_exp))+1
+        learn_iters_budget_fn = lambda K: int(K**args.learn_iters_budget_exp)+1
+        max_phase_len_fn = lambda K: int(K**args.max_phase_len_exp)+1
         res = Parallel(n_jobs=args.num_jobs)(delayed(lsvi_ucb_alt_learning_adaptive)(
                                                                chunk[0], chunk[1], K_step, num_reps,
                                                                args.output_folder, 'output_chunk',
@@ -120,7 +119,8 @@ def main():
                                                                lambbda_fn,
                                                                beta_fn,
                                                                V_opt[0],
-                                                               total_learn_iters_fn=learn_iters_budget_fn,
+                                                               space_budget_fn=learn_iters_budget_fn,
+                                                               max_phase_len_fn=max_phase_len_fn,
                                                                min_phase_len=20,
                                                                lookback_period=args.lookback_period,
                                                                alt_threshold=args.alt_threshold
