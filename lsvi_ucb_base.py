@@ -3,20 +3,23 @@ import pandas as pd
 import time
 from pathlib import Path
 
-from lsrl_utils import sherman_morrison_update, repeat_avg
+from lsrl_utils import sherman_morrison_update, repeat_cat
 
-def lsvi_ucb_learning(chunk_min, chunk_max, chunk_step, num_reps, output_folder, base_file_name, mdp, lambbda_fn, beta_fn, V_opt_zero):
+def lsvi_ucb_learning(chunk_min, chunk_max, chunk_step, num_reps, output_folder, base_file_name, mdp, lambbda_fn, beta_fn, V_opt_zero, random_state):
+    rng_new = np.random.default_rng(random_state)
+    mdp.set_rng(rng_new)
     ofldr = Path(output_folder)
     output_file = ofldr / ('%s_%d_%d_%d.csv' % (base_file_name, chunk_min, chunk_max-1, int(time.time())))
     
     res = []
     K_range = np.arange(chunk_min, chunk_max, chunk_step)
     for K in K_range:
-        res.append(repeat_avg(lsvi_ucb_learning_si, num_reps)(mdp, K, lambbda_fn(K), beta_fn(K), V_opt_zero))
+        res.append(repeat_cat(lsvi_ucb_learning_si, num_reps)(mdp, K, lambbda_fn(K), beta_fn(K), V_opt_zero))
     res = np.array(res)
-    
-    out_data = pd.DataFrame({'K':K_range, 'Regret':res[:,0], 'ProcessTime':res[:,1], 'SpaceUsage':res[:,2]})
-    out_data.to_csv(output_file.absolute().as_posix(), encoding='utf-8', index=False)
+    res = np.reshape(res, newshape=(-1, 3))
+    index = pd.MultiIndex.from_product([K_range, range(1, num_reps+1)], names=["K", "I"])
+    out_data = pd.DataFrame(res, columns=['Regret', 'ProcessTime', 'SpaceUsage'], index=index)
+    out_data.to_csv(output_file.absolute().as_posix(), encoding='utf-8', index=True)
     print('Completed output for chunk K between {%d --- %d} (file %s)' % (chunk_min, chunk_max-1, output_file.as_posix()))
     return 0
 # End fn lsvi_ucb_learning

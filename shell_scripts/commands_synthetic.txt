@@ -1,0 +1,35 @@
+# All commands to be run from code root folder
+
+# To download the model files from dropbox and place them in models folder
+./shell_scripts/init.sh
+
+# The following commands need to be run in a python virtualenv
+# To install packages
+pip install -r requirements.txt
+
+# Baseline (LSVI-UCB, K = 5k)
+./shell_scripts/expts_baseline_5k.sh -m models/linear_mdp02.dat -n NUM_MP_JOBS -o synth1
+
+# Fixed no reset (ICDM) long (K = 15k)
+./shell_scripts/expts_fixed_noreset_15k_20reps.sh -m models/linear_mdp02.dat -n NUM_MP_JOBS -o synth1
+
+# Fixed reset (AAAI) long (K = 15k)
+./shell_scripts/expts_fixed_reset_15k_20reps.sh -m models/linear_mdp02.dat -n NUM_MP_JOBS -o synth1
+
+# Adaptive no reset (ICDM) long (K = 15k)
+./shell_scripts/expts_adaptive_noreset_15k_20reps.sh -m models/linear_mdp02.dat -n NUM_MP_JOBS -o synth1
+
+# Adaptive reset (AAAI) long (K = 15k)
+./shell_scripts/expts_adaptive_reset_15k_20reps.sh -m models/linear_mdp02.dat -n NUM_MP_JOBS -o synth1
+
+# Fixed no reset (ICDM) parameter variations (K = 5k)
+./shell_scripts/expts_fixed_noreset_paramvar_5k_20reps.sh -m models/linear_mdp02.dat -n NUM_MP_JOBS -o synth1
+
+# Fixed reset (AAAI) parameter variations (K = 5k)
+./shell_scripts/expts_fixed_reset_paramvar_5k_20reps.sh -m models/linear_mdp02.dat -n NUM_MP_JOBS -o synth1
+
+# Adaptive no reset (ICDM) parameter variations (K = 5k)
+./shell_scripts/expts_adaptive_noreset_paramvar_5k_20reps.sh -m models/linear_mdp02.dat -n NUM_MP_JOBS -o synth1
+
+# Adaptive reset (AAAI) parameter variations (K = 5k)
+./shell_scripts/expts_adaptive_reset_paramvar_5k_20reps.sh -m models/linear_mdp02.dat -n NUM_MP_JOBS -o synth1

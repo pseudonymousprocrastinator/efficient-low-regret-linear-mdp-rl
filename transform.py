@@ -3,15 +3,9 @@ os.environ['OPENBLAS_NUM_THREADS'] = '1'
 
 import numpy as np
 
-from numpy.random import default_rng
-
 from scipy.sparse import csc_matrix
 
 from sys import getsizeof
-
-random_seed = 1542973613
-rng = default_rng()
-
 
 class SketchTransform:
     def __init__(self, n, d, eps, delta):
@@ -36,7 +30,8 @@ class SketchTransform:
 
 
 class CountSketchTransform(SketchTransform):
-    def __init__(self, n, d, eps=1e-3, delta=0.99, r=None):
+    def __init__(self, n, d, rng, eps=1e-3, delta=0.99, r=None):
+        self.rng = rng
         super().__init__(n, d, eps, delta)
 
         if r is None:
@@ -49,8 +44,8 @@ class CountSketchTransform(SketchTransform):
         row_indices = np.zeros(shape=(n,))
         data = np.zeros_like(row_indices)
         for i in range(n):
-            row_indices[i] = rng.choice(range(self.r))
-            data[i] = rng.choice([1,-1])
+            row_indices[i] = self.rng.choice(range(self.r))
+            data[i] = self.rng.choice([1,-1])
         # End for
 
         self.SM = csc_matrix((data, row_indices, row_indptr), shape=(self.r, n))

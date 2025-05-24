@@ -4,13 +4,16 @@ import math
 
 from lsvi_ucb_base import lsvi_ucb_learning
 from lsvi_sketching import lsvi_ucb_sketched_learning
-from lsvi_learning_alt import lsvi_ucb_alt_learning_fixed, lsvi_ucb_alt_learning_adaptive
+from lsvi_learning_alt_reset import lsvi_ucb_alt_learning_fixed_reset, lsvi_ucb_alt_learning_adaptive_reset
+from lsvi_learning_alt_noreset import lsvi_ucb_alt_learning_fixed_noreset, lsvi_ucb_alt_learning_adaptive_noreset
 
-from lsrl_utils import generate_intervals, repeat_avg
+from lsrl_utils import generate_intervals
 
 from argparse import ArgumentParser
 import pickle
 from pathlib import Path
+import sys
+import shlex
 
 from joblib import Parallel, delayed
 import pandas as pd
@@ -18,40 +21,48 @@ import pandas as pd
 from linear_mdp import TabLinearMDP
 from linearize_interface import NeuralLinearMDP
 
-random_seed = 1542973613
-rng = default_rng(random_seed)
-
+rng = None
 
 def main():
-    K_step = 20
+    beta_scale_factor = 0.0001
     
     parser = ArgumentParser(prog="experiment_base")
     
-    parser.add_argument("alg", choices=["basic", "sketch", "alt_fixed", "alt_adaptive"],)
-    parser.add_argument("K_max", type=int, help=("The maximum number of episodes (will try #episodes from K_min to K_max in steps of %d)" % (K_step)))
+    parser.add_argument("alg", choices=["basic", "sketch", "alt_fixed_reset", "alt_adaptive_reset", "alt_fixed_noreset", "alt_adaptive_noreset"],)
+    parser.add_argument("K_max", type=int, help="The maximum number of episodes (will try #episodes from K_min to K_max in steps of K_step)")
     parser.add_argument("mdp_file", help="The name of the file to read the MDP data from")
     # Optional arguments - general
+    parser.add_argument("-S", "--seed", type=int, default=1542973613, help="The initial PRNG seed to use with the experiments.")
     parser.add_argument("-o", "--output-folder", default="./output/", help="Folder to store the experiment results (CSV format).")
-    parser.add_argument("-n", "--num-jobs", type=int, default=16, help="The number of parallel jobs (processes) to use")
+    parser.add_argument("-n", "--num-jobs", type=int, default=1, help="The number of parallel jobs (processes) to use")
     parser.add_argument("--k-min", type=int, default=100, help="The K value to start with.")
-    parser.add_argument("--num-reps", type=int, default=5, help="The number of repetitions for each K")
+    parser.add_argument("--k-step", type=int, default=20, help="The increment for the K values.")
+    parser.add_argument("--num-reps", type=int, default=1, help="The number of repetitions for each K")
     parser.add_argument("--chunk-size", type=int, default=10, help="The number of K values in each chunk")
+    parser.add_argument("--arg-file", default="0", help="Name of file with command line args")
     # Alg-specific arguments
     parser.add_argument("--sketch-dim", type=int, default=100, help="The projection-dimension of the sketch transform (if alg=sketch)")
-    parser.add_argument("--learn-iters-base-exp", type=float, default=0.5, help="The exponent e of int(K^e)+1 --- the base number of iterations (phase length) used with alg=alt_fixed.")
-    parser.add_argument("--lookback-period", type=int, default=10, help="The number of steps to look-back for the alternation condition (if alg=alt_adaptive)")
-    parser.add_argument("--alt-threshold", type=float, default=0.1, help="The alternation condition threshold (if alg=alt_adaptive) --- actual threshold will be this param * d^2")
-    parser.add_argument("--learn-iters-budget-exp", type=float, default=0.5, help="The exponent e of int(K^e)+1 --- the total learning iterations budget if alg=alt_adaptive")
-    parser.add_argument("--max-phase-len-exp", type=float, default=0.5, help="The exponent f of int(K^f)+1 -- the maximum phase length (before reset) used with alg=alt_adaptive")
+    parser.add_argument("--learn-iters-base-exp", type=float, default=0.5, help="The exponent e of int(K^e)+1 --- the base number of iterations (phase length) used with alg=alt_fixed_*.")
+    parser.add_argument("--lookback-period", type=int, default=10, help="The number of steps to look-back for the alternation condition (if alg=alt_adaptive_*)")
+    parser.add_argument("--alt-threshold", type=float, default=0.001, help="The alternation condition threshold (if alg=alt_adaptive_*) --- actual threshold will be this param * d^2")
+    parser.add_argument("--learn-iters-budget-exp", type=float, default=0.5, help="The exponent e of int(K^e)+1 --- the total learning iterations/space budget if alg=alt_adaptive_*")
+    parser.add_argument("--max-phase-len-exp", type=float, default=0.5, help="The exponent f of int(K^f)+1 -- the maximum phase length (before reset) used with alg=alt_adaptive_reset")
     
     args = parser.parse_args()
+    if (args.arg_file != "0"):
+        f_arg_str = Path(args.arg_file).read_text()
+        args = parser.parse_args(shlex.split(f_arg_str) + sys.argv[1:])
+    
+    rng = default_rng(args.seed)
+
     K_min = args.k_min
+    K_step = args.k_step
     num_reps = args.num_reps
     chunk_size = args.chunk_size
     print('Arguments:', args)
     print('Params:', 'K_min = %d, K_step = %d, chunk_size = %d, num_reps = %d' % (K_min, K_step, chunk_size, num_reps))
     
-    assert(args.K_max >= 200)
+    assert(args.K_max >= K_min)
     assert(args.num_jobs >= 1)
     assert(args.sketch_dim >= 1)
     assert(args.lookback_period >= 1)
@@ -59,6 +70,9 @@ def main():
     
     chunk_intervals = generate_intervals(K_min, args.K_max + 1, K_step, chunk_size)
     print('Output chunk intervals:', ' '.join(['[%d, %d, %d]' % (c[0], c[1], K_step) for c in chunk_intervals]))
+    seed_seq = rng.bit_generator._seed_seq
+    # Create a random state for each chunk to be passed to the joblib worker fns
+    random_states = seed_seq.spawn(len(chunk_intervals))
     
     # Load MDP data from file
     mdp_file_path = Path(args.mdp_file)
@@ -71,8 +85,8 @@ def main():
     # Create output folder if necessary (mkdir -p equivalent)
     Path(args.output_folder).mkdir(parents=True, exist_ok=True)
     
-    lambbda_fn = lambda K : 1.
-    beta_fn = lambda K : 0.05 * mdp.d * mdp.H * math.sqrt(math.log(3.*mdp.d*mdp.H*K))
+    lambbda_fn = lambda K : 0.1
+    beta_fn = lambda K : beta_scale_factor * mdp.d * mdp.H * math.sqrt(math.log(3.*mdp.d*mdp.H*K))
     
     if args.alg == 'basic':
         print('Basic LSVI-UCB\n-------------------')
@@ -82,8 +96,9 @@ def main():
                                                                mdp,
                                                                lambbda_fn,
                                                                beta_fn,
-                                                               V_opt[0])
-                                    for chunk in chunk_intervals)
+                                                               V_opt[0],
+                                                               random_state=random_states[i])
+                                    for i, chunk in enumerate(chunk_intervals))
     elif args.alg == 'sketch':
         print('Sketched LSVI-UCB\n-------------------')
         res = Parallel(n_jobs=args.num_jobs)(delayed(lsvi_ucb_sketched_learning)(
@@ -93,44 +108,78 @@ def main():
                                                                args.sketch_dim,
                                                                lambbda_fn,
                                                                beta_fn,
-                                                               V_opt[0])
-                                    for chunk in chunk_intervals)
-    elif args.alg == 'alt_fixed':
-        print('Space-saving LSVI-UCB (fixed)\n------------------------------')
-        learn_iters_base_fn = lambda K: int(2.*(K**args.learn_iters_base_exp))+1
-        res = Parallel(n_jobs=args.num_jobs)(delayed(lsvi_ucb_alt_learning_fixed)(
+                                                               V_opt[0],
+                                                               random_state=random_states[i])
+                                    for i, chunk in enumerate(chunk_intervals))
+    elif args.alg == 'alt_fixed_reset':
+        print('Space-saving LSVI-UCB (fixed, with reset)\n------------------------------')
+        r_learn_iters_base_fn = lambda K: int(2.*(K**args.learn_iters_base_exp))+1
+        res = Parallel(n_jobs=args.num_jobs)(delayed(lsvi_ucb_alt_learning_fixed_reset)(
                                                                chunk[0], chunk[1], K_step, num_reps,
                                                                args.output_folder, 'output_chunk',
                                                                mdp,
                                                                lambbda_fn,
                                                                beta_fn,
                                                                V_opt[0],
-                                                               learn_iters_base_fn=learn_iters_base_fn,
+                                                               learn_iters_base_fn=r_learn_iters_base_fn,
+                                                               random_state=random_states[i]
                                                             )
-                                    for chunk in chunk_intervals)
-    elif args.alg == 'alt_adaptive':
-        print('Space-saving LSVI-UCB (adaptive)\n----------------------------------')
-        learn_iters_budget_fn = lambda K: int(K**args.learn_iters_budget_exp)+1
-        max_phase_len_fn = lambda K: int(K**args.max_phase_len_exp)+1
-        res = Parallel(n_jobs=args.num_jobs)(delayed(lsvi_ucb_alt_learning_adaptive)(
+                                    for i, chunk in enumerate(chunk_intervals))
+    elif args.alg == 'alt_adaptive_reset':
+        print('Space-saving LSVI-UCB (adaptive, with reset)\n----------------------------------')
+        r_learn_iters_budget_fn = lambda K: int(K**args.learn_iters_budget_exp)+1
+        r_max_phase_len_fn = lambda K: int(K**args.max_phase_len_exp)+1
+        res = Parallel(n_jobs=args.num_jobs)(delayed(lsvi_ucb_alt_learning_adaptive_reset)(
                                                                chunk[0], chunk[1], K_step, num_reps,
                                                                args.output_folder, 'output_chunk',
                                                                mdp,
                                                                lambbda_fn,
                                                                beta_fn,
                                                                V_opt[0],
-                                                               space_budget_fn=learn_iters_budget_fn,
-                                                               max_phase_len_fn=max_phase_len_fn,
+                                                               space_budget_fn=r_learn_iters_budget_fn,
+                                                               max_phase_len_fn=r_max_phase_len_fn,
                                                                min_phase_len=20,
                                                                lookback_period=args.lookback_period,
-                                                               alt_threshold=args.alt_threshold
+                                                               alt_threshold=args.alt_threshold,
+                                                               random_state=random_states[i]
                                                             )
-                                    for chunk in chunk_intervals)
+                                    for i, chunk in enumerate(chunk_intervals))
+    elif args.alg == 'alt_fixed_noreset':
+        print('Space-saving LSVI-UCB (fixed, no reset)\n------------------------------')
+        nr_learn_iters_base_fn = lambda K: int(2.*(K**args.learn_iters_base_exp))+1
+        nr_total_learn_iters_fn = lambda K : 2*nr_learn_iters_base_fn(K) + mdp.H # Works with scale_factor = 0.5
+        res = Parallel(n_jobs=args.num_jobs)(delayed(lsvi_ucb_alt_learning_fixed_noreset)(
+                                                               chunk[0], chunk[1], K_step, num_reps,
+                                                               args.output_folder, 'output_chunk',
+                                                               mdp,
+                                                               lambbda_fn,
+                                                               beta_fn,
+                                                               V_opt[0],
+                                                               learn_iters_base_fn=nr_learn_iters_base_fn,
+                                                               scale_factor=0.5,
+                                                               total_learn_iters_fn=nr_total_learn_iters_fn,
+                                                               random_state=random_states[i]
+                                                            )
+                                    for i, chunk in enumerate(chunk_intervals))
+    elif args.alg == 'alt_adaptive_noreset':
+        print('Space-saving LSVI-UCB (adaptive, no reset)\n----------------------------------')
+        nr_learn_iters_budget_fn = lambda K: int(4.*(K**args.learn_iters_budget_exp))+1
+        res = Parallel(n_jobs=args.num_jobs)(delayed(lsvi_ucb_alt_learning_adaptive_noreset)(
+                                                               chunk[0], chunk[1], K_step, num_reps,
+                                                               args.output_folder, 'output_chunk',
+                                                               mdp,
+                                                               lambbda_fn,
+                                                               beta_fn,
+                                                               V_opt[0],
+                                                               total_learn_iters_fn=nr_learn_iters_budget_fn,
+                                                               min_phase_len=20,
+                                                               lookback_period=args.lookback_period,
+                                                               alt_threshold=args.alt_threshold,
+                                                               random_state=random_states[i]
+                                                            )
+                                    for i, chunk in enumerate(chunk_intervals))
     # End if
-    #res = np.array(res)
-    #K_range = np.arange(K_min, args.K_max + 1, K_step)
-    #out_data = pd.DataFrame({'K':K_range, 'Regret':res[:,0], 'ProcessTime':res[:,1], 'SpaceUsage':res[:,2]})
-    #out_data.to_csv(args.output_file, encoding='utf-8', index=False)
+    print('END')
 # End fn main
 
 if __name__ == '__main__':

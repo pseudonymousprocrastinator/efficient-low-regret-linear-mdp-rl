@@ -4,7 +4,7 @@ from numpy.random import default_rng
 
 from abc import ABC, abstractmethod
 
-random_seed = 1542973613
+random_seed = 1542972613
 rng = default_rng(random_seed)
 
 
@@ -24,6 +24,7 @@ def _random_simplex_vector(d: int):
 
 class LinearMDP(ABC):
     def __init__(self, A: int, d: int, H: int, seed: int, reward_variance: float):
+        self._rng = rng
         self._state = self.reset(seed)  # current state
         self._h = 0  # current step index (within episode)
         self.reward_variance = reward_variance
@@ -35,13 +36,17 @@ class LinearMDP(ABC):
         assert (H >= 1)
         self.H = H  # planning horizon
     # End fn __init__
-    
+
+    def set_rng(self, rng_new):
+        self._rng = rng_new
+    # End fn set_rng
+
     def reset(self, seed=None):
         pass
     
     def sample_reward(self, expected_reward: float):
         # Assume clipped normal reward distribution around expected reward
-        return np.clip(rng.normal(expected_reward, self.reward_variance), 0., 1.)
+        return np.clip(self._rng.normal(expected_reward, self.reward_variance), 0., 1.)
     # End fn sample_reward
     
     # Return phi(current_state, a)
@@ -153,7 +158,7 @@ class TabLinearMDP(LinearMDP):
     def get_next_state(self, h, a):
         phi = self.query_phi(a)
         transition_distr = np.matmul(self.transition_measures[h], phi[:, np.newaxis])
-        return rng.choice(range(self.S), p=transition_distr.ravel())
+        return self._rng.choice(range(self.S), p=transition_distr.ravel())
     # End fn get_next_state
     
     ######################################################################################################
